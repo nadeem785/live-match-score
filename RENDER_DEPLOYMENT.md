@@ -22,10 +22,11 @@ Make sure your code is pushed to a GitHub repository.
 
 **Build & Deploy:**
 - **Environment:** `Python 3`
+- **Python Version:** `3.11.9` (IMPORTANT: Set this to avoid distutils error)
 - **Build Command:** `pip install -r requirements.txt`
 - **Start Command:** `gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:$PORT app:app`
 
-**OR (Simpler alternative):**
+**OR (Simpler alternative - works with any Python version):**
 - **Start Command:** `python app.py`
 
 ### Step 4: Environment Variables

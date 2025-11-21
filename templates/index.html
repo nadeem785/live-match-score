@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Match Viewer</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+      color: #333;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+
+    .header {
+      text-align: center;
+      color: white;
+      margin-bottom: 30px;
+      padding: 20px;
+    }
+
+    .header h1 {
+      font-size: 2.5rem;
+      font-weight: 700;
+      margin-bottom: 10px;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+    }
+
+    .header p {
+      font-size: 1.1rem;
+      opacity: 0.9;
+    }
+
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+    }
+
+    .control-panel {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto auto;
+      gap: 15px;
+      align-items: end;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .form-group label {
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #555;
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .form-group input,
+    .form-group select {
+      padding: 12px 16px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: 1rem;
+      transition: border-color 0.3s ease;
+      background: white;
+    }
+
+    .form-group input:focus,
+    .form-group select:focus {
+      outline: none;
+      border-color: #667eea;
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+    }
+
+    .btn {
+      padding: 12px 24px;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #5568d3 0%, #653a8f 100%);
+    }
+
+    .btn-secondary {
+      background: #f5f5f5;
+      color: #666;
+    }
+
+    .btn-secondary:hover {
+      background: #e8e8e8;
+    }
+
+    #status {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 600;
+      padding: 16px 24px;
+    }
+
+    .status-indicator {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #ccc;
+      animation: pulse 2s infinite;
+    }
+
+    .status-indicator.connected {
+      background: #4caf50;
+      box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+    }
+
+    .status-indicator.disconnected {
+      background: #f44336;
+      animation: none;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .match-card {
+      background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+      border-radius: 16px;
+      padding: 30px;
+      margin-bottom: 20px;
+    }
+
+    .match-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 2px solid rgba(0,0,0,0.1);
+    }
+
+    .match-id {
+      font-family: 'Courier New', monospace;
+      background: rgba(102, 126, 234, 0.1);
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-weight: 600;
+      color: #667eea;
+    }
+
+    .match-status {
+      background: #4caf50;
+      color: white;
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+
+    .match-status.unknown {
+      background: #ff9800;
+    }
+
+    .team-container {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 24px;
+    }
+
+    .team-card {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      text-align: center;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      transition: transform 0.3s ease;
+    }
+
+    .team-card:hover {
+      transform: scale(1.02);
+    }
+
+    .team-name {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: #333;
+      margin-bottom: 16px;
+    }
+
+    .team-score {
+      font-size: 3rem;
+      font-weight: 800;
+      color: #667eea;
+      margin-bottom: 12px;
+    }
+
+    .team-possession {
+      font-size: 0.9rem;
+      color: #666;
+      padding: 8px;
+      background: #f5f5f5;
+      border-radius: 8px;
+    }
+
+    .match-info {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+
+    .info-item {
+      background: white;
+      padding: 16px;
+      border-radius: 8px;
+      text-align: center;
+    }
+
+    .info-label {
+      font-size: 0.85rem;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+
+    .info-value {
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: #333;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #666;
+    }
+
+    .loading::after {
+      content: '...';
+      animation: dots 1.5s steps(4, end) infinite;
+    }
+
+    @keyframes dots {
+      0%, 20% { content: '.'; }
+      40% { content: '..'; }
+      60%, 100% { content: '...'; }
+    }
+
+    .error-message {
+      background: #ffebee;
+      color: #c62828;
+      padding: 16px;
+      border-radius: 8px;
+      border-left: 4px solid #c62828;
+    }
+
+    .info-message {
+      background: #e3f2fd;
+      color: #1565c0;
+      padding: 16px;
+      border-radius: 8px;
+      border-left: 4px solid #1565c0;
+      text-align: center;
+    }
+
+    @media (max-width: 768px) {
+      .control-panel {
+        grid-template-columns: 1fr;
+      }
+
+      .team-container {
+        grid-template-columns: 1fr;
+      }
+
+      .header h1 {
+        font-size: 2rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>⚽ Live Match Viewer</h1>
+      <p>Real-time sports match updates</p>
+    </div>
+
+    <div class="card control-panel">
+      <div class="form-group">
+        <label for="matchId">Match ID</label>
+        <input type="text" id="matchId" value="match-1" placeholder="Enter match ID">
+      </div>
+      <div class="form-group">
+        <label for="sport">Sport</label>
+        <select id="sport">
+          <option value="cricket">🏏 Cricket</option>
+          <option value="football">⚽ Football</option>
+        </select>
+      </div>
+      <button id="sub" class="btn btn-primary">Subscribe</button>
+      <button id="unsub" class="btn btn-secondary">Unsubscribe</button>
+    </div>
+
+    <div id="status" class="card">
+      <span class="status-indicator"></span>
+      <span>Not connected</span>
+    </div>
+
+    <div id="match"></div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+  <script>
+    const socket = io();
+    const status = document.getElementById('status');
+    const matchDiv = document.getElementById('match');
+    const matchIdInput = document.getElementById('matchId');
+    const sportSel = document.getElementById('sport');
+    
+    let currentSubscription = null; // Track current subscription
+
+    const statusIndicator = status.querySelector('.status-indicator');
+    const statusText = status.querySelector('span:last-child');
+
+    socket.on('connect', () => {
+      statusText.textContent = 'Connected ('+socket.id+')';
+      statusIndicator.className = 'status-indicator connected';
+    });
+    socket.on('disconnect', () => {
+      statusText.textContent = 'Disconnected';
+      statusIndicator.className = 'status-indicator disconnected';
+      currentSubscription = null;
+    });
+    socket.on('connect_error', (error) => {
+      statusText.textContent = 'Connection error: ' + error.message;
+      statusIndicator.className = 'status-indicator disconnected';
+    });
+
+    document.getElementById('sub').onclick = () => {
+      const m = matchIdInput.value.trim() || 'match-1';
+      const sport = sportSel.value;
+      
+      // Unsubscribe from previous match if different
+      if (currentSubscription && currentSubscription !== m) {
+        console.log(`Unsubscribing from previous match: ${currentSubscription}`);
+        socket.emit('match:unsubscribe', { match_id: currentSubscription });
+      }
+      
+      // Subscribe to new match
+      currentSubscription = m;
+      console.log(`Subscribing to: ${m} (${sport})`);
+      socket.emit('match:subscribe', { match_id: m, sport: sport });
+      statusText.textContent = `Subscribing to ${m} (${sport})...`;
+      matchDiv.innerHTML = '<div class="card loading">Loading match data</div>';
+    };
+    
+    document.getElementById('unsub').onclick = () => {
+      const m = matchIdInput.value.trim() || 'match-1';
+      if (currentSubscription === m) {
+        socket.emit('match:unsubscribe', { match_id: m });
+        statusText.textContent = `Unsubscribed ${m}`;
+        matchDiv.innerHTML = '';
+        currentSubscription = null;
+      } else {
+        statusText.textContent = `Not subscribed to ${m}`;
+      }
+    };
+
+    socket.on('match:update', payload => {
+      try {
+        const p = payload;
+        console.log('Received match update:', p);
+        
+        // Handle initial subscription response
+        if (p.info) {
+          matchDiv.innerHTML = `<div class="card info-message">${p.info}</div>`;
+          statusText.textContent = `Subscribed to ${p.id || currentSubscription || 'match'}`;
+          return;
+        }
+        
+        if (!p.raw) {
+          matchDiv.innerHTML = '<div class="card loading">Waiting for match data</div>';
+          return;
+        }
+        
+        // Update status to show we're receiving data
+        if (p.id) {
+          statusText.textContent = `Subscribed to ${p.id} (${p.sport || 'football'}) - Receiving updates`;
+          statusIndicator.className = 'status-indicator connected';
+        }
+        
+        const sport = p.sport || 'football';
+        const matchId = p.id || 'N/A';
+        const statusText_val = p.raw.status || 'Unknown';
+        const lastUpdated = p.last_updated ? new Date(p.last_updated*1000).toLocaleTimeString() : 'N/A';
+        
+        let html = `<div class="match-card">`;
+        html += `<div class="match-header">`;
+        html += `<div class="match-id">${matchId}</div>`;
+        html += `<div class="match-status ${statusText_val.toLowerCase().includes('live') ? '' : 'unknown'}">${statusText_val}</div>`;
+        html += `</div>`;
+
+        if (sport === 'cricket' && p.raw.innings && p.raw.innings.length > 0) {
+          const inn = p.raw.innings[0];
+          html += `<div class="team-container">`;
+          html += `<div class="team-card">`;
+          html += `<div class="team-name">Runs</div>`;
+          html += `<div class="team-score">${inn.runs || 0}</div>`;
+          html += `<div class="team-possession">Overs: ${inn.overs_balls || '0.0'}</div>`;
+          html += `</div>`;
+          html += `<div class="team-card">`;
+          html += `<div class="team-name">Run Rate</div>`;
+          html += `<div class="team-score" style="font-size: 2rem;">${p.stats && p.stats.run_rate ? p.stats.run_rate : '0.0'}</div>`;
+          html += `</div>`;
+          html += `</div>`;
+          
+          if (p.stats && p.stats.top_scorer) {
+            html += `<div class="match-info">`;
+            html += `<div class="info-item">`;
+            html += `<div class="info-label">Top Scorer</div>`;
+            html += `<div class="info-value">${p.stats.top_scorer.name || '—'}</div>`;
+            html += `</div>`;
+            html += `<div class="info-item">`;
+            html += `<div class="info-label">Runs</div>`;
+            html += `<div class="info-value">${p.stats.top_scorer.runs || 0}</div>`;
+            html += `</div>`;
+            html += `</div>`;
+          }
+        } else if (sport === 'football' && p.raw.teams && p.raw.score) {
+          // Display football match with teams and scores
+          const teams = p.raw.teams || [];
+          const score = p.raw.score || {};
+          const possession = p.stats && p.stats.possession ? p.stats.possession : {};
+          
+          if (teams.length >= 2) {
+            html += `<div class="team-container">`;
+            html += `<div class="team-card">`;
+            html += `<div class="team-name">${teams[0]}</div>`;
+            html += `<div class="team-score">${score[teams[0]] || 0}</div>`;
+            html += `<div class="team-possession">Possession: ${possession[teams[0]] || '0%'}</div>`;
+            html += `</div>`;
+            html += `<div class="team-card">`;
+            html += `<div class="team-name">${teams[1]}</div>`;
+            html += `<div class="team-score">${score[teams[1]] || 0}</div>`;
+            html += `<div class="team-possession">Possession: ${possession[teams[1]] || '0%'}</div>`;
+            html += `</div>`;
+            html += `</div>`;
+          } else {
+            html += `<div class="info-message">Score: ${JSON.stringify(score)}</div>`;
+          }
+          
+          if (p.stats && p.stats.top_scorer) {
+            html += `<div class="match-info">`;
+            html += `<div class="info-item">`;
+            html += `<div class="info-label">Top Scorer</div>`;
+            html += `<div class="info-value">${p.stats.top_scorer.name || '—'}</div>`;
+            html += `</div>`;
+            html += `<div class="info-item">`;
+            html += `<div class="info-label">Goals</div>`;
+            html += `<div class="info-value">${p.stats.top_scorer.goals || 0}</div>`;
+            html += `</div>`;
+            html += `</div>`;
+          }
+        } else {
+          // Fallback for unknown format
+          html += `<div class="info-message">${JSON.stringify(p.raw, null, 2)}</div>`;
+        }
+        
+        html += `<div class="match-info">`;
+        html += `<div class="info-item">`;
+        html += `<div class="info-label">Sport</div>`;
+        html += `<div class="info-value">${sport.toUpperCase()}</div>`;
+        html += `</div>`;
+        html += `<div class="info-item">`;
+        html += `<div class="info-label">Last Updated</div>`;
+        html += `<div class="info-value">${lastUpdated}</div>`;
+        html += `</div>`;
+        html += `</div>`;
+        html += `</div>`;
+        
+        matchDiv.innerHTML = html;
+      } catch (error) {
+        console.error('Error processing match update:', error);
+        matchDiv.innerHTML = `<div class="card error-message">Error displaying match data: ${error.message}</div>`;
+      }
+    });
+  </script>
+</body>
+</html>

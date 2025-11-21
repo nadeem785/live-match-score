@@ -11,7 +11,8 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'secret-key-change-in-production')
-socketio = SocketIO(app, cors_allowed_origins="*")
+# Use threading mode for Python 3.12+ compatibility (eventlet doesn't work with Python 3.12+)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 POLL_INTERVAL = 10  # seconds
 matches = {}
@@ -560,4 +561,5 @@ def get_match(match_id):
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
     print(f"Server running at http://0.0.0.0:{port}")
-    socketio.run(app, host="0.0.0.0", port=port, debug=False)
+    # Use threading mode explicitly to avoid eventlet issues with Python 3.12+
+    socketio.run(app, host="0.0.0.0", port=port, debug=False, allow_unsafe_werkzeug=True)

@@ -1,3 +1,4 @@
+# app.py (Multi-League Soccer + CricAPI currentMatches cricket integration)
 import time
 import threading
 import requests
@@ -5,561 +6,259 @@ import os
 from flask import Flask, render_template, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Flask + SocketIO Setup
-# ─────────────────────────────────────────────────────────────────────────────
-
+# Flask + SocketIO setup
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'secret-key-change-in-production')
-# Use threading mode for Python 3.12+ compatibility (eventlet doesn't work with Python 3.12+)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'secret-key')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 POLL_INTERVAL = 10  # seconds
-matches = {}
+matches = {}        # cached data per poll_key
 poll_threads = {}
 poll_lock = threading.Lock()
 
+# ---------------- Soccer ----------------
+SOCCER_LEAGUES = {
+    "EPL": "eng.1",
+    "La Liga": "esp.1",
+    "Serie A": "ita.1",
+    "Bundesliga": "ger.1",
+    "Ligue 1": "fra.1",
+    "UCL": "uefa.champions"
+}
+def soccer_league_url(code):
+    return f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# REAL SPORTS API FETCHERS  (ESPN — No API key needed)
-# ─────────────────────────────────────────────────────────────────────────────
-ESPN_FOOTBALL_URL = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard"
-ESPN_CRICKET_URL = "https://site.api.espn.com/apis/site/v2/sports/cricket/scoreboard"
-
-def fetch_football_data():
-    """Fetch real football match data from ESPN."""
+def fetch_soccer_data(league_code):
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json'
-        }
-        res = requests.get(ESPN_FOOTBALL_URL, timeout=10, headers=headers)
-        res.raise_for_status()
-        data = res.json()
-        print(f"API Response: Status {res.status_code}, Events: {len(data.get('events', []))}")
-        return data
-    except requests.exceptions.Timeout:
-        print("Error: API request timed out")
-        return None
-    except requests.exceptions.HTTPError as e:
-        print(f"Error: HTTP {e.response.status_code} - {e.response.reason}")
-        return None
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching football data: {e}")
-        return None
-    except ValueError as e:
-        print(f"Error parsing JSON response: {e}")
+        headers = {"User-Agent":"Mozilla/5.0","Accept":"application/json"}
+        r = requests.get(soccer_league_url(league_code), timeout=10, headers=headers)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print("[SOCCER ERROR]", e)
         return None
 
+def map_soccer_state(data):
+    if not data or "events" not in data:
+        return {"matches": [], "updated": time.time()}
+    out = []
+    for ev in data.get("events", []):
+        try:
+            comp = ev.get("competitions", [])[0]
+            comps = comp.get("competitors", [])
+            home = next((c for c in comps if c.get("homeAway")=="home"), comps[0] if comps else {})
+            away = next((c for c in comps if c.get("homeAway")=="away"), comps[1] if len(comps)>1 else {})
+            out.append({
+                "home_team": home.get("team", {}).get("displayName","Home"),
+                "away_team": away.get("team", {}).get("displayName","Away"),
+                "home_score": int(home.get("score") or 0),
+                "away_score": int(away.get("score") or 0),
+                "status": comp.get("status", {}).get("type", {}).get("description",""),
+                "time": comp.get("status", {}).get("type", {}).get("shortDetail","")
+            })
+        except Exception:
+            continue
+    return {"matches": out, "updated": time.time()}
 
-def fetch_cricket_data():
-    """Fetch real cricket match data from ESPN."""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json'
-        }
-        res = requests.get(ESPN_CRICKET_URL, timeout=10, headers=headers)
-        res.raise_for_status()
-        data = res.json()
-        print(f"Cricket API Response: Status {res.status_code}, Events: {len(data.get('events', []))}")
-        return data
-    except requests.exceptions.Timeout:
-        print("Error: Cricket API request timed out")
-        return None
-    except requests.exceptions.HTTPError as e:
-        print(f"Error: HTTP {e.response.status_code} - {e.response.reason}")
-        return None
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching cricket data: {e}")
-        return None
-    except ValueError as e:
-        print(f"Error parsing JSON response: {e}")
-        return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Convert ESPN JSON → our internal state format
-# ─────────────────────────────────────────────────────────────────────────────
-def map_football_state(data):
-    """
-    Converts ESPN JSON → clean internal state:
-    - teams
-    - score
-    - possession (if available)
-    - status
-    """
-    if not data:
-        print("Error: No data received from API")
-        return None
-        
-    if "events" not in data:
-        print(f"Error: 'events' key not found in API response. Keys: {list(data.keys())}")
-        return None
-        
-    if len(data["events"]) == 0:
-        print("Warning: No events found in API response (no matches currently available)")
-        return None
-
-    try:
-        ev = data["events"][0]                     # first match
-        if "competitions" not in ev or len(ev["competitions"]) == 0:
-            print("Error: No competitions found in event")
-            return None
-            
-        comp = ev["competitions"][0]
-        if "competitors" not in comp:
-            print("Error: No competitors found in competition")
-            return None
-            
-        teams = comp["competitors"]
-        
-        if len(teams) < 2:
-            print(f"Error: Not enough teams found ({len(teams)} teams)")
-            return None
-    except (KeyError, IndexError) as e:
-        print(f"Error parsing ESPN data structure: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-    try:
-        teamA = teams[0]["team"]["displayName"]
-        teamB = teams[1]["team"]["displayName"]
-    except (KeyError, IndexError) as e:
-        print(f"Error extracting team names: {e}")
-        return None
-
-    # Get possession stats safely
-    def get_possession(team_data):
-        """Extract possession percentage from team statistics."""
-        if "statistics" not in team_data or not team_data["statistics"]:
-            return "0%"
-        # Look for possession stat in statistics array
-        for stat in team_data["statistics"]:
-            if stat.get("name") == "possession" or stat.get("name") == "timeOfPossession":
-                return stat.get("displayValue", "0%")
-        # If not found, return first stat or default
-        return team_data["statistics"][0].get("displayValue", "0%") if team_data["statistics"] else "0%"
-    
-    state = {
-        "sport": "football",
-        "last_updated": time.time(),
-        "teams": [teamA, teamB],
-        "score": {
-            teamA: int(teams[0].get("score", 0)),
-            teamB: int(teams[1].get("score", 0))
-        },
-        "status": comp.get("status", {}).get("type", {}).get("description", "Unknown"),
-        "possession": {
-            teamA: get_possession(teams[0]),
-            teamB: get_possession(teams[1])
-        }
-    }
-
-    return state
-
-
-def map_cricket_state(data):
-    """
-    Converts ESPN Cricket JSON → clean internal state:
-    - teams
-    - score (runs, wickets, overs)
-    - status
-    """
-    if not data:
-        print("Error: No cricket data received from API")
-        return None
-        
-    if "events" not in data:
-        print(f"Error: 'events' key not found in cricket API response. Keys: {list(data.keys())}")
-        return None
-        
-    if len(data["events"]) == 0:
-        print("Warning: No cricket events found in API response (no matches currently available)")
-        return None
-
-    try:
-        ev = data["events"][0]                     # first match
-        if "competitions" not in ev or len(ev["competitions"]) == 0:
-            print("Error: No competitions found in cricket event")
-            return None
-            
-        comp = ev["competitions"][0]
-        if "competitors" not in comp:
-            print("Error: No competitors found in cricket competition")
-            return None
-            
-        teams = comp["competitors"]
-        
-        if len(teams) < 2:
-            print(f"Error: Not enough teams found ({len(teams)} teams)")
-            return None
-    except (KeyError, IndexError) as e:
-        print(f"Error parsing ESPN cricket data structure: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-    try:
-        teamA = teams[0]["team"]["displayName"]
-        teamB = teams[1]["team"]["displayName"]
-    except (KeyError, IndexError) as e:
-        print(f"Error extracting cricket team names: {e}")
-        return None
-
-    # Get cricket innings data - ESPN cricket API structure
-    def get_innings_data(team_data):
-        """Extract innings information from team data."""
-        # Try multiple ways to get score
-        score = 0
-        wickets = 0
-        overs = "0.0"
-        
-        # Method 1: Direct score field
-        if "score" in team_data:
-            score = int(team_data.get("score", 0))
-        
-        # Method 2: From linescores array
-        if "linescores" in team_data and team_data["linescores"]:
-            for line in team_data["linescores"]:
-                name = line.get("name", "").lower()
-                value = line.get("value", 0)
-                display_value = line.get("displayValue", "")
-                
-                if "run" in name or "score" in name:
-                    try:
-                        score = int(value) if value else 0
-                    except:
-                        score = 0
-                elif "wicket" in name:
-                    try:
-                        wickets = int(value) if value else 0
-                    except:
-                        wickets = 0
-                elif "over" in name:
-                    overs = display_value or str(value) or "0.0"
-        
-        # Method 3: From statistics
-        if "statistics" in team_data and team_data["statistics"]:
-            for stat in team_data["statistics"]:
-                name = stat.get("name", "").lower()
-                value = stat.get("value", 0)
-                display_value = stat.get("displayValue", "")
-                
-                if "run" in name or "score" in name:
-                    try:
-                        score = int(value) if value else score
-                    except:
-                        pass
-                elif "wicket" in name:
-                    try:
-                        wickets = int(value) if value else wickets
-                    except:
-                        pass
-                elif "over" in name:
-                    overs = display_value or overs
-        
-        return {
-            "runs": score,
-            "wickets": wickets,
-            "overs_balls": overs
-        }
-    
-    teamA_data = get_innings_data(teams[0])
-    teamB_data = get_innings_data(teams[1])
-    
-    # Create innings array for display
-    current_innings = [teamA_data]
-    
-    state = {
-        "sport": "cricket",
-        "last_updated": time.time(),
-        "teams": [teamA, teamB],
-        "score": {
-            teamA: teamA_data["runs"],
-            teamB: teamB_data["runs"]
-        },
-        "status": comp.get("status", {}).get("type", {}).get("description", "Unknown"),
-        "innings": current_innings,
-        "wickets": {
-            teamA: teamA_data["wickets"],
-            teamB: teamB_data["wickets"]
-        }
-    }
-
-    return state
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# POLLING LOOP (Runs every 10s, fetches real data)
-# ─────────────────────────────────────────────────────────────────────────────
-def poll_loop(match_id, sport="football"):
-    print(f"Poll loop started for {match_id} (sport: {sport})")
-    # Wait for initial fetch in subscribe handler to complete
-    time.sleep(1)
-    
+def soccer_poll_loop(room_id, league_code):
+    """Poll soccer scoreboard for given league and emit to room_id"""
+    poll_key = f"soccer:{room_id}:{league_code}"
+    print(f"[POLL] Soccer {room_id} -> {league_code}")
     while True:
         try:
-            if sport == "cricket":
-                api_data = fetch_cricket_data()
-                mapped = map_cricket_state(api_data)
-            else:
-                api_data = fetch_football_data()
-                mapped = map_football_state(api_data)
-
+            raw = fetch_soccer_data(league_code)
+            mapped = map_soccer_state(raw)
             if mapped:
-                matches[match_id] = mapped
-                print(f"Match data updated for {match_id}: {mapped['teams'][0]} vs {mapped['teams'][1]}")
-
-                if sport == "cricket":
-                    socketio.emit("match:update", {
-                        "id": match_id,
-                        "sport": "cricket",
-                        "raw": mapped,
-                        "stats": {
-                            "run_rate": "N/A",  # Calculate if needed
-                            "top_scorer": {"name": "N/A", "runs": 0}
-                        },
-                        "last_updated": mapped["last_updated"]
-                    }, room=match_id)
-                else:
-                    socketio.emit("match:update", {
-                        "id": match_id,
-                        "sport": "football",
-                        "raw": mapped,
-                        "stats": {
-                            "possession": mapped["possession"],
-                            "top_scorer": {"name": "N/A", "goals": "?"}
-                        },
-                        "last_updated": mapped["last_updated"]
-                    }, room=match_id)
-            else:
-                print(f"No match data available for {match_id} (API may have no active matches)")
-
+                matches[poll_key] = mapped
+                socketio.emit("league:update", {
+                    "id": room_id,
+                    "matches": mapped["matches"],
+                    "last_updated": mapped["updated"]
+                }, room=room_id)
         except Exception as e:
-            print(f"POLL ERROR for {match_id}: {e}")
-            import traceback
-            traceback.print_exc()
-
+            print("[soccer_poll_loop] error ->", e)
         time.sleep(POLL_INTERVAL)
 
+# ---------------- Cricket (CricAPI currentMatches mapper) ----------------
+CRICAPI_KEY = os.environ.get('CRICAPI_KEY', '69be3aaf-e3a4-4d69-8298-c443223afb36')
+CRICAPI_CURRENT = f"https://api.cricapi.com/v1/currentMatches?apikey={CRICAPI_KEY}"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Socket Events
-# ─────────────────────────────────────────────────────────────────────────────
-@socketio.on("match:subscribe")
-def subscribe(data):
-    match_id = data.get("match_id")
-    sport = data.get("sport", "football")
+def fetch_cricket_current():
+    try:
+        headers = {"User-Agent":"Mozilla/5.0","Accept":"application/json"}
+        r = requests.get(CRICAPI_CURRENT, timeout=12, headers=headers)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print("[CRICKET] fetch error ->", e)
+        return None
 
-    join_room(match_id)
-    print(f"Client subscribed to {match_id} (sport: {sport})")
+def map_cricket_state_from_current(json_data):
+    if not json_data:
+        return {"matches": [], "cards": [], "updated": time.time()}
 
-    # Create unique key for match_id + sport combination
-    poll_key = f"{match_id}:{sport}"
+    arr = json_data.get("data") or json_data.get("matches") or json_data.get("result") or []
+    if not isinstance(arr, list):
+        arr = list(arr) if isinstance(arr, dict) else []
 
-    # start poller if not running
+    summary = []
+    cards = []
+
+    for ev in arr:
+        try:
+            mid = ev.get("id")
+            name = ev.get("name", "")
+            matchType = ev.get("matchType", "")
+            status = ev.get("status", "")
+            venue = ev.get("venue", "")
+            teams = ev.get("teams", [])  # [home, away]
+            teamInfo = ev.get("teamInfo", [])  # objects with name, shortname, img
+            score_list = ev.get("score", [])  # list of innings objects with r,w,o,inning
+
+            def find_latest_for_team(team_name):
+                for s in reversed(score_list):
+                    if not s:
+                        continue
+                    inn = (s.get("inning") or "").lower()
+                    if team_name and team_name.lower() in inn:
+                        return s
+                return score_list[-1] if score_list else {}
+
+            home = teams[0] if len(teams) > 0 else (teamInfo[0].get("name") if teamInfo else "Home")
+            away = teams[1] if len(teams) > 1 else (teamInfo[1].get("name") if len(teamInfo)>1 else "Away")
+
+            home_score_obj = find_latest_for_team(home)
+            away_score_obj = find_latest_for_team(away)
+
+            def score_str(obj):
+                if not obj:
+                    return "0/0 (0.0)"
+                r = obj.get("r", obj.get("runs") or 0)
+                w = obj.get("w", obj.get("wickets") or 0)
+                o = obj.get("o", obj.get("overs") or 0)
+                o_str = str(o)
+                return f"{r}/{w} ({o_str})"
+
+            summary.append({
+                "id": mid,
+                "home_team": home,
+                "away_team": away,
+                "home_score": score_str(home_score_obj),
+                "away_score": score_str(away_score_obj),
+                "status": status,
+                "time": ev.get("dateTimeGMT") or ev.get("date") or ""
+            })
+
+            teams_card = []
+            for i, tname in enumerate([home, away]):
+                tinfo = teamInfo[i] if i < len(teamInfo) else {}
+                s_obj = find_latest_for_team(tname)
+                runs = s_obj.get("r") or s_obj.get("runs") or 0
+                wickets = s_obj.get("w") or s_obj.get("wickets") or 0
+                overs = s_obj.get("o") or s_obj.get("overs") or ""
+                teams_card.append({
+                    "team": tname,
+                    "shortname": tinfo.get("shortname") or tname[:3].upper(),
+                    "img": tinfo.get("img") or "",
+                    "runs": runs,
+                    "wickets": wickets,
+                    "overs": overs
+                })
+
+            cards.append({
+                "id": mid,
+                "name": name,
+                "matchType": matchType,
+                "status": status,
+                "venue": venue,
+                "teams": teams_card,
+                "raw_score_list": score_list
+            })
+        except Exception as e:
+            print("[map_cricket_state] skipped event ->", e)
+            continue
+
+    return {"matches": summary, "cards": cards, "updated": time.time()}
+
+def cricket_poll_loop(room_id="cricket"):
+    print("[POLL] Cricket poller started (using cricapi currentMatches)")
+    poll_key = "cricket"
+    while True:
+        try:
+            raw = fetch_cricket_current()
+            mapped = map_cricket_state_from_current(raw)
+            if mapped:
+                matches[poll_key] = mapped
+                socketio.emit("cricket:update", {
+                    "id": "cricket",
+                    "matches": mapped.get("matches", []),
+                    "cards": mapped.get("cards", []),
+                    "last_updated": mapped.get("updated")
+                }, room=room_id)
+        except Exception as e:
+            print("[cricket_poll_loop] error ->", e)
+        time.sleep(POLL_INTERVAL)
+
+# ---------------- Socket events ----------------
+@socketio.on("cricket:subscribe")
+def on_cricket_subscribe(data):
+    room_id = "cricket"
+    join_room(room_id)
+    print("[WS] subscribed to cricket room")
+    with poll_lock:
+        if "cricket" not in poll_threads:
+            t = threading.Thread(target=cricket_poll_loop, args=(room_id,), daemon=True)
+            poll_threads["cricket"] = t
+            t.start()
+    cached = matches.get("cricket")
+    if cached:
+        socketio.emit("cricket:update", {"id":"cricket","matches":cached.get("matches",[]),"cards":cached.get("cards",[]),"last_updated":cached.get("updated")}, room=room_id)
+    else:
+        socketio.emit("cricket:update", {"id":"cricket","matches":[],"info":"Fetching initial cricket data..."}, room=room_id)
+
+@socketio.on("cricket:unsubscribe")
+def on_cricket_unsub(data):
+    leave_room("cricket")
+    print("[WS] unsubscribed from cricket")
+
+@socketio.on("league:subscribe")
+def on_league_subscribe(data):
+    league_name = data.get("league","EPL")
+    room_id = league_name
+    league_code = SOCCER_LEAGUES.get(league_name, "eng.1")
+    join_room(room_id)
+    print("[WS] subscribe league:", league_name)
+    poll_key = f"soccer:{room_id}:{league_code}"
     with poll_lock:
         if poll_key not in poll_threads:
-            print(f"Starting poll thread for {sport} data...")
-            t = threading.Thread(target=poll_loop, args=(match_id, sport), daemon=True)
+            t = threading.Thread(target=soccer_poll_loop, args=(room_id, league_code), daemon=True)
             poll_threads[poll_key] = t
             t.start()
-            
-            # Fetch data immediately instead of waiting for first poll interval
-            print(f"Fetching initial {sport} data for {match_id}...")
-            try:
-                if sport == "cricket":
-                    api_data = fetch_cricket_data()
-                    mapped = map_cricket_state(api_data)
-                else:
-                    api_data = fetch_football_data()
-                    mapped = map_football_state(api_data)
-                
-                if mapped:
-                    matches[match_id] = mapped
-                    print(f"Initial match data fetched for {match_id}: {mapped['teams'][0]} vs {mapped['teams'][1]}")
-                    
-                    if sport == "cricket":
-                        socketio.emit("match:update", {
-                            "id": match_id,
-                            "sport": "cricket",
-                            "raw": mapped,
-                            "stats": {
-                                "run_rate": "N/A",
-                                "top_scorer": {"name": "N/A", "runs": 0}
-                            },
-                            "last_updated": mapped["last_updated"]
-                        }, room=match_id)
-                    else:
-                        socketio.emit("match:update", {
-                            "id": match_id,
-                            "sport": "football",
-                            "raw": mapped,
-                            "stats": {
-                                "possession": mapped["possession"],
-                                "top_scorer": {"name": "N/A", "goals": "?"}
-                            },
-                            "last_updated": mapped["last_updated"]
-                        }, room=match_id)
-                else:
-                    socketio.emit("match:update", {
-                        "info": "No active matches found. Waiting for matches to become available...",
-                        "id": match_id,
-                        "sport": sport
-                    }, room=match_id)
-            except Exception as e:
-                print(f"Error fetching initial data for {match_id}: {e}")
-                import traceback
-                traceback.print_exc()
-                socketio.emit("match:update", {
-                    "info": f"Error fetching match data: {str(e)}",
-                    "id": match_id,
-                    "sport": sport
-                }, room=match_id)
-        else:
-            # Poll thread already running, just send current data if available
-            print(f"Poll thread already running for {poll_key}, sending cached data")
-            if match_id in matches:
-                mapped = matches[match_id]
-                current_sport = mapped.get("sport", sport)
-                
-                if current_sport == "cricket":
-                    socketio.emit("match:update", {
-                        "id": match_id,
-                        "sport": "cricket",
-                        "raw": mapped,
-                        "stats": {
-                            "run_rate": "N/A",
-                            "top_scorer": {"name": "N/A", "runs": 0}
-                        },
-                        "last_updated": mapped["last_updated"]
-                    }, room=match_id)
-                else:
-                    socketio.emit("match:update", {
-                        "id": match_id,
-                        "sport": "football",
-                        "raw": mapped,
-                        "stats": {
-                            "possession": mapped.get("possession", {}),
-                            "top_scorer": {"name": "N/A", "goals": "?"}
-                        },
-                        "last_updated": mapped["last_updated"]
-                    }, room=match_id)
-            else:
-                # Trigger immediate fetch for existing subscription
-                print(f"No cached data for {match_id}, triggering immediate fetch...")
-                try:
-                    if sport == "cricket":
-                        api_data = fetch_cricket_data()
-                        mapped = map_cricket_state(api_data)
-                    else:
-                        api_data = fetch_football_data()
-                        mapped = map_football_state(api_data)
-                    
-                    if mapped:
-                        matches[match_id] = mapped
-                        print(f"Match data fetched for {match_id}: {mapped['teams'][0]} vs {mapped['teams'][1]}")
-                        
-                        if sport == "cricket":
-                            socketio.emit("match:update", {
-                                "id": match_id,
-                                "sport": "cricket",
-                                "raw": mapped,
-                                "stats": {
-                                    "run_rate": "N/A",
-                                    "top_scorer": {"name": "N/A", "runs": 0}
-                                },
-                                "last_updated": mapped["last_updated"]
-                            }, room=match_id)
-                        else:
-                            socketio.emit("match:update", {
-                                "id": match_id,
-                                "sport": "football",
-                                "raw": mapped,
-                                "stats": {
-                                    "possession": mapped["possession"],
-                                    "top_scorer": {"name": "N/A", "goals": "?"}
-                                },
-                                "last_updated": mapped["last_updated"]
-                            }, room=match_id)
-                    else:
-                        socketio.emit("match:update", {
-                            "info": "No active matches found. Waiting for matches to become available...",
-                            "id": match_id,
-                            "sport": sport
-                        }, room=match_id)
-                except Exception as e:
-                    print(f"Error fetching data for existing subscription {match_id}: {e}")
-                    socketio.emit("match:update", {
-                        "info": f"Error fetching match data: {str(e)}",
-                        "id": match_id,
-                        "sport": sport
-                    }, room=match_id)
+    # send cached data if available
+    cached = matches.get(poll_key)
+    if cached:
+        socketio.emit("league:update", {"id": room_id, "matches": cached["matches"], "last_updated": cached["updated"]}, room=room_id)
+    else:
+        socketio.emit("league:update", {"id": room_id, "matches": [], "info": "Fetching initial data..."}, room=room_id)
 
+@socketio.on("league:unsubscribe")
+def on_league_unsub(data):
+    league_name = data.get("league")
+    leave_room(league_name)
+    print("[WS] unsubscribed from league:", league_name)
 
-@socketio.on("match:unsubscribe")
-def unsubscribe(data):
-    match_id = data.get("match_id")
-    leave_room(match_id)
-    print(f"Client unsubscribed from {match_id}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Routes
-# ─────────────────────────────────────────────────────────────────────────────
+# Basic route
 @app.route("/")
 def home():
-    return render_template("index.html")
+    return render_template("index.html", leagues=list(SOCCER_LEAGUES.keys()))
 
-
-@app.route("/api/test")
-@app.route("/api/test/<sport>")
-def test_api(sport="football"):
-    """Test endpoint to check if ESPN API is working."""
-    try:
-        if sport == "cricket":
-            api_data = fetch_cricket_data()
-        else:
-            api_data = fetch_football_data()
-            
-        if api_data:
-            events_count = len(api_data.get("events", []))
-            return jsonify({
-                "status": "success",
-                "sport": sport,
-                "events_count": events_count,
-                "has_data": events_count > 0,
-                "sample_keys": list(api_data.keys()) if api_data else []
-            })
-        else:
-            return jsonify({
-                "status": "error",
-                "sport": sport,
-                "message": f"Failed to fetch data from ESPN {sport} API"
-            }), 500
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "sport": sport,
-            "message": str(e)
-        }), 500
-
-
-@app.route("/api/match/<match_id>")
-def get_match(match_id):
-    """Get current match data for a given match_id."""
-    if match_id in matches:
-        return jsonify(matches[match_id])
-    else:
-        return jsonify({"error": "Match not found"}), 404
-
-
-# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/api/test/cricket")
+def test_cricket():
+    data = fetch_cricket_current()
+    ok = bool(data and (data.get("data") or data.get("matches")))
+    return jsonify({"ok": ok, "sample_keys": list(data.keys()) if isinstance(data, dict) else []})
 
 if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 5000))
-    print(f"Server running at http://0.0.0.0:{port}")
-    # Use threading mode explicitly to avoid eventlet issues with Python 3.12+
+    port = int(os.environ.get("PORT", 5000))
+    print("Starting server on port", port)
     socketio.run(app, host="0.0.0.0", port=port, debug=False, allow_unsafe_werkzeug=True)

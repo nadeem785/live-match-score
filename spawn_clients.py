@@ -1,12 +1,13 @@
-# spawn_clients.py
+# spawn_clients.py (UPDATED FOR MULTI-LEAGUE SOCCER)
 import socketio
 import time
 import threading
 
 SERVER = 'http://localhost:5000'
 CLIENTS = 60
-match_id = 'match-1'
-sport = 'cricket'
+
+# choose league to stress test
+league_name = "EPL"
 
 sockets = []
 
@@ -15,14 +16,14 @@ def make_client(i):
 
     @sio.event
     def connect():
-        # subscribe immediately
-        sio.emit('match:subscribe', {'match_id': match_id, 'sport': sport, 'simulate': True})
-
-    @sio.on('match:update')
-    def on_update(data):
-        # minimal logging to avoid flooding console
+        sio.emit('league:subscribe', {'league': league_name})
         if i < 2:
-            print(f"[client {i}] update at {time.strftime('%X')}: {data['id']}")
+            print(f"[client {i}] connected + subscribed to {league_name}")
+
+    @sio.on('league:update')
+    def on_update(data):
+        if i < 2:
+            print(f"[client {i}] received update ({len(data.get('matches', []))} matches)")
 
     @sio.event
     def disconnect():
@@ -34,15 +35,13 @@ def make_client(i):
     except Exception as e:
         print("Failed to connect client", i, e)
 
-# spawn clients quickly
 threads = []
 for i in range(CLIENTS):
     t = threading.Thread(target=make_client, args=(i,), daemon=True)
-    t.start()
     threads.append(t)
-    time.sleep(0.05)  # slight stagger
+    t.start()
+    time.sleep(0.05)
 
-# keep main alive to hold clients
 print(f"Spawned ~{CLIENTS} clients. Press Ctrl+C to stop.")
 try:
     while True:
